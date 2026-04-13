@@ -1,0 +1,127 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tasktracker-postgres
+    environment:
+      POSTGRES_DB: tasktracker
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d tasktracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tasktracker-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: tasktracker-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - tasktracker-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: tasktracker-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9093:9093"
+      - "29093:29093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29093,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - tasktracker-network
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: tasktracker-mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - tasktracker-network
+
+  backend-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tasktracker-backend
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/tasktracker
+      SPRING_DATASOURCE_USERNAME: admin
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29093
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - tasktracker-network
+
+  email-sender:
+    build:
+      context: ./email
+      dockerfile: Dockerfile
+    container_name: tasktracker-email-sender
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29093
+      SPRING_KAFKA_CONSUMER_GROUP_ID: email-sender-group
+      SPRING_MAIL_HOST: mailhog
+      SPRING_MAIL_PORT: 1025
+    depends_on:
+      - kafka
+      - mailhog
+    networks:
+      - tasktracker-network
+
+  scheduler-service:
+    build:
+      context: ./scheduler
+      dockerfile: Dockerfile
+    container_name: tasktracker-scheduler
+    ports:
+      - "8087:8087"
+    environment:
+      SERVER_PORT: 8087
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/tasktracker
+      SPRING_DATASOURCE_USERNAME: admin
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29093
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - tasktracker-network
+
+networks:
+  tasktracker-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
